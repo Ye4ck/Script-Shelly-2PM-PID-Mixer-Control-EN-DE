@@ -76,7 +76,7 @@ Stelle sicher, dass die Temperatursensoren korrekt angeschlossen und zugeordnet 
 1. Öffne die Shelly Web-Oberfläche
 2. Navigiere zu **Scripts** → **Library**
 3. Erstelle ein neues Script
-4. Kopiere den Inhalt von `shelly_2pm_pid_mischer.js`
+4. Kopiere den Inhalt von `shelly_2pm_pid_mischer_deutsch.js`
 5. Speichern und **Script aktivieren**
 
 ### Schritt 4: Konfiguration anpassen
