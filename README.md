@@ -41,7 +41,7 @@ An intelligent PID controller for heating mixers based on the Shelly 2PM with in
 ## 🔧 System Requirements
 
 ### Hardware
-- **Shelly 2PM** (Gen2 or Gen2+)
+- **Shelly 2PM** (Gen2 Pro or Gen3 and above)
 - **2x DS18B20 Temperature Sensors** (or compatible)
   - Sensor 100: Buffer storage sensor
   - Sensor 101: Flow temperature sensor
