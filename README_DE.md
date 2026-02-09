@@ -41,7 +41,7 @@ Eine intelligente PID-Regelung für Heizungsmischer basierend auf dem Shelly 2PM
 ## 🔧 Systemanforderungen
 
 ### Hardware
-- **Shelly 2PM** (Gen2 oder Gen2+)
+- **Shelly 2PM** (Gen2 Pro oder Gen3 und darüber)
 - **2x DS18B20 Temperatursensoren** (oder kompatibel)
   - Sensor 100: Pufferspeicher-Fühler
   - Sensor 101: Vorlauf-Temperaturfühler
