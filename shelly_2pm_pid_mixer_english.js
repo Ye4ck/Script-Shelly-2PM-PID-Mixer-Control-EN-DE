@@ -20,16 +20,22 @@ let Kd = 2.0;
 let TEMP_READ_INTERVAL = 10000;      // Temperature query: 10 seconds
 let PID_CALC_INTERVAL = 150000;      // PID calculation: 2.5 minutes
 let BUFFER_CHECK_INTERVAL = 30000;   // Buffer check: 30 seconds
-let MIN_MOVE_PAUSE = 30000;          // Minimum pause between movements: 30 seconds
+let MIN_MOVE_PAUSE = 60000;          // Minimum pause between movements: 60 seconds
 
 // Mixer Configuration
 let MIXER_FULL_TIME = 120;           // Seconds for 0-100% travel
 let MIN_POSITION = 0;                // Minimum position (closed)
 let MAX_POSITION = 100;              // Maximum position (open)
+let MIN_MOVE_PERCENT = 2;            // Minimum change to trigger movement (integer)
 
 // Emergency Thresholds
 let BUFFER_EMERGENCY_MIN = 40;       // Below 40°C -> Emergency
 let BUFFER_EMERGENCY_OK = 45;        // Above 45°C -> Emergency cleared
+
+// PID Anti-Windup Limits
+let INTEGRAL_MIN = -50;
+let INTEGRAL_MAX = 50;
+let OUTPUT_STEP_LIMIT = 15;          // Max % change per PID step
 
 /*********** OPERATING STATES ***********/
 let STATE = {
@@ -50,15 +56,16 @@ let bufferTemp = null;               // Current buffer temperature
 let setpoint = 25;                   // Setpoint temperature
 
 // Mixer State
-let currentPosition = 50;            // Current position (0-100%)
-let targetPosition = 50;             // Target position
+let currentPosition = 50;            // Current position (0-100%, integer)
+let targetPosition = 50;             // Target position (integer)
 let isMoving = false;                // Movement flag
 let lastMoveTime = 0;                // Timestamp of last movement
+let moveTimer = null;                // Reference to active movement timer
 
 // PID Variables
 let integral = 0;
 let lastError = 0;
-let lastPidTime = Date.now();
+let lastPidTime = 0;
 let pidInitialized = false;
 
 // Emergency Status
@@ -71,7 +78,34 @@ let emergencyStartTime = 0;
  * Clamps a value between min and max
  */
 function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), max);
+    if (value < min) return min;
+    if (value > max) return max;
+    return value;
+}
+
+/**
+ * Rounds to nearest even integer
+ * E.g. 23 -> 22, 25 -> 26, 51 -> 52
+ */
+function roundToEven(value) {
+    let rounded = Math.round(value);
+    if (rounded % 2 !== 0) {
+        // Odd number: round towards the direction of the original value
+        if (value > rounded) {
+            rounded += 1;
+        } else {
+            rounded -= 1;
+        }
+    }
+    return rounded;
+}
+
+/**
+ * Converts a position to a valid even integer within bounds
+ */
+function toValidPosition(value) {
+    let pos = roundToEven(value);
+    return clamp(pos, MIN_POSITION, MAX_POSITION);
 }
 
 /**
@@ -85,73 +119,66 @@ function now() {
  * Sets the operating state and updates the text component
  */
 function setState(newState) {
-    if (currentState !== newState) {
-        previousState = currentState;
-        currentState = newState;
-        
-        // Update text component
-        Shelly.call("Text.Set", { 
-            id: STATE_TEXT_ID, 
-            value: newState 
-        }, function(result) {
-            // Success
-        }, function(error_code, error_message) {
-            print("Error setting status:", error_message);
-        });
-        
-        print("State change:", previousState, "->", newState);
-    }
+    if (currentState === newState) return;
+    
+    previousState = currentState;
+    currentState = newState;
+    
+    Shelly.call("Text.Set", {
+        id: STATE_TEXT_ID,
+        value: newState
+    }, null, function(error_code, error_message) {
+        print("Error setting status: " + error_message);
+    });
+    
+    log("State: " + previousState + " -> " + newState);
 }
 
 /**
  * Logs a message with timestamp
  */
 function log(message) {
-    print("[" + new Date().toISOString() + "]", message);
+    print("[" + new Date().toISOString() + "] " + message);
 }
 
 /*********** SENSOR FUNCTIONS ***********/
 
 /**
+ * Reads a temperature sensor by ID, returns value or null
+ */
+function readTempSensor(sensorId, sensorName) {
+    let status = Shelly.getComponentStatus("temperature", sensorId);
+    if (status && typeof status.tC === "number") {
+        return status.tC;
+    }
+    log(sensorName + ": Invalid or missing value");
+    return null;
+}
+
+/**
  * Reads the flow temperature
  */
 function readFlowTemp() {
-    try {
-        let status = Shelly.getComponentStatus('temperature', TEMP_SENSOR_ID);
-        if (status && typeof status.tC === 'number') {
-            flowTemp = status.tC;
-            return true;
-        } else {
-            log("Flow sensor: Invalid value");
-            flowTemp = null;
-            return false;
-        }
-    } catch (e) {
-        log("Error reading flow sensor: " + e);
-        flowTemp = null;
-        return false;
+    let value = readTempSensor(TEMP_SENSOR_ID, "Flow sensor");
+    if (value !== null) {
+        flowTemp = value;
+        return true;
     }
+    flowTemp = null;
+    return false;
 }
 
 /**
  * Reads the buffer storage temperature
  */
 function readBufferTemp() {
-    try {
-        let status = Shelly.getComponentStatus('temperature', BUFFER_SENSOR_ID);
-        if (status && typeof status.tC === 'number') {
-            bufferTemp = status.tC;
-            return true;
-        } else {
-            log("Buffer sensor: Invalid value");
-            bufferTemp = null;
-            return false;
-        }
-    } catch (e) {
-        log("Error reading buffer sensor: " + e);
-        bufferTemp = null;
-        return false;
+    let value = readTempSensor(BUFFER_SENSOR_ID, "Buffer sensor");
+    if (value !== null) {
+        bufferTemp = value;
+        return true;
     }
+    bufferTemp = null;
+    return false;
 }
 
 /**
@@ -162,55 +189,44 @@ function readSetpoint() {
         let handle = Virtual.getHandle(SETPOINT_ID);
         if (handle !== undefined) {
             let value = handle.getValue();
-            if (typeof value === 'number' && value > 0 && value < 100) {
+            if (typeof value === "number" && value > 0 && value < 100) {
                 setpoint = value;
                 return true;
             }
         }
-        log("Invalid setpoint, using default: " + setpoint);
-        return false;
     } catch (e) {
         log("Error reading setpoint: " + e);
-        return false;
     }
+    log("Invalid setpoint, using: " + setpoint);
+    return false;
+}
+
+/**
+ * Reads a single PID parameter from a virtual component
+ */
+function readSinglePID(componentId, currentValue) {
+    try {
+        let handle = Virtual.getHandle(componentId);
+        if (handle !== undefined) {
+            let value = handle.getValue();
+            if (typeof value === "number" && value >= 0) {
+                return value;
+            }
+        }
+    } catch (e) {
+        // Keep current value on error
+    }
+    return currentValue;
 }
 
 /**
  * Reads PID parameters from virtual components
  */
 function readPIDParameters() {
-    try {
-        let handleKp = Virtual.getHandle(PID_KP_ID);
-        let handleKi = Virtual.getHandle(PID_KI_ID);
-        let handleKd = Virtual.getHandle(PID_KD_ID);
-        
-        if (handleKp !== undefined) {
-            let value = handleKp.getValue();
-            if (typeof value === 'number' && value >= 0) {
-                Kp = value;
-            }
-        }
-        
-        if (handleKi !== undefined) {
-            let value = handleKi.getValue();
-            if (typeof value === 'number' && value >= 0) {
-                Ki = value;
-            }
-        }
-        
-        if (handleKd !== undefined) {
-            let value = handleKd.getValue();
-            if (typeof value === 'number' && value >= 0) {
-                Kd = value;
-            }
-        }
-        
-        log("PID parameters: Kp=" + Kp + ", Ki=" + Ki + ", Kd=" + Kd);
-        return true;
-    } catch (e) {
-        log("Error reading PID parameters: " + e);
-        return false;
-    }
+    Kp = readSinglePID(PID_KP_ID, Kp);
+    Ki = readSinglePID(PID_KI_ID, Ki);
+    Kd = readSinglePID(PID_KD_ID, Kd);
+    log("PID: Kp=" + Kp + ", Ki=" + Ki + ", Kd=" + Kd);
 }
 
 /*********** MIXER CONTROL ***********/
@@ -219,9 +235,15 @@ function readPIDParameters() {
  * Stops the current mixer movement
  */
 function stopMixer() {
-    Shelly.call("Cover.Stop", { id: COVER_ID }, function(result) {
+    // Cancel pending movement timer
+    if (moveTimer !== null) {
+        Timer.clear(moveTimer);
+        moveTimer = null;
+    }
+    
+    Shelly.call("Cover.Stop", { id: COVER_ID }, function() {
         isMoving = false;
-        log("Mixer stopped at position: " + currentPosition + "%");
+        log("Mixer stopped at: " + currentPosition + "%");
     }, function(error_code, error_message) {
         log("Error stopping mixer: " + error_message);
         isMoving = false;
@@ -229,27 +251,33 @@ function stopMixer() {
 }
 
 /**
- * Moves the mixer to a target position
+ * Moves the mixer to a target position (even integer)
+ * @param {number} newTargetPosition - Desired position (will be rounded to even int)
+ * @param {boolean} forceMove - Skip pause/movement checks
+ * @returns {boolean} - Whether movement was started
  */
 function moveMixerTo(newTargetPosition, forceMove) {
-    // Default value for forceMove
-    if (forceMove === undefined) {
-        forceMove = false;
-    }
+    if (forceMove === undefined) forceMove = false;
     
-    // Clamp position
-    newTargetPosition = clamp(newTargetPosition, MIN_POSITION, MAX_POSITION);
+    // Convert to valid even integer position
+    newTargetPosition = toValidPosition(newTargetPosition);
     
     // Check if movement is already in progress
     if (isMoving && !forceMove) {
-        log("Mixer already moving - ignoring command");
+        log("Mixer busy - ignoring");
         return false;
     }
     
-    // Check if pause must be observed
+    // Force: stop current movement first
+    if (isMoving && forceMove) {
+        stopMixer();
+    }
+    
+    // Check minimum pause
     let timeSinceLastMove = now() - lastMoveTime;
     if (timeSinceLastMove < MIN_MOVE_PAUSE && !forceMove) {
-        log("Minimum pause still active (" + Math.round((MIN_MOVE_PAUSE - timeSinceLastMove) / 1000) + "s)");
+        let remaining = Math.round((MIN_MOVE_PAUSE - timeSinceLastMove) / 1000);
+        log("Pause active (" + remaining + "s remaining)");
         setState(STATE.PAUSE);
         return false;
     }
@@ -258,8 +286,8 @@ function moveMixerTo(newTargetPosition, forceMove) {
     let positionDiff = newTargetPosition - currentPosition;
     
     // Ignore too small changes
-    if (Math.abs(positionDiff) < 1 && !forceMove) {
-        log("Position already reached (" + currentPosition + "%)");
+    if (Math.abs(positionDiff) < MIN_MOVE_PERCENT && !forceMove) {
+        log("Position OK (" + currentPosition + "%)");
         return false;
     }
     
@@ -270,28 +298,29 @@ function moveMixerTo(newTargetPosition, forceMove) {
     
     // Calculate travel time
     let movePercentage = Math.abs(positionDiff);
-    let moveTimeMs = (movePercentage / 100) * MIXER_FULL_TIME * 1000;
+    let moveTimeMs = Math.round((movePercentage / 100) * MIXER_FULL_TIME * 1000);
     
-    log("Moving mixer: " + currentPosition + "% -> " + targetPosition + "% (" + 
-        Math.round(moveTimeMs / 1000) + "s)");
+    // Minimum travel time safety
+    if (moveTimeMs < 500) moveTimeMs = 500;
     
-    // Determine direction and start movement
+    log("Move: " + currentPosition + "% -> " + targetPosition +
+        "% (diff=" + positionDiff + "%, time=" + Math.round(moveTimeMs / 1000) + "s)");
+    
+    // Determine direction
     let command = positionDiff > 0 ? "Cover.Open" : "Cover.Close";
     
-    Shelly.call(command, { id: COVER_ID }, function(result) {
-        // Movement started
-        
-        // Timer to stop after calculated time
-        Timer.set(moveTimeMs, false, function() {
+    Shelly.call(command, { id: COVER_ID }, function() {
+        // Movement started - set stop timer
+        moveTimer = Timer.set(moveTimeMs, false, function() {
+            moveTimer = null;
             stopMixer();
             currentPosition = targetPosition;
             lastMoveTime = now();
             
-            // Return to previous state
-            if (!emergencyActive) {
-                setState(STATE.AUTO);
-            } else {
+            if (emergencyActive) {
                 setState(STATE.EMERGENCY);
+            } else {
+                setState(STATE.AUTO);
             }
             
             log("Position reached: " + currentPosition + "%");
@@ -312,45 +341,44 @@ function moveMixerTo(newTargetPosition, forceMove) {
  * Checks the buffer storage and activates emergency mode if necessary
  */
 function checkBufferEmergency() {
-    // Read buffer temperature
-    if (!readBufferTemp()) {
-        return; // Sensor error, try again on next timer
-    }
+    if (!readBufferTemp()) return;
     
-    // Activate emergency if buffer too cold
     if (!emergencyActive && bufferTemp < BUFFER_EMERGENCY_MIN) {
+        // ACTIVATE emergency
         emergencyActive = true;
         emergencyStartTime = now();
         setState(STATE.EMERGENCY);
         
-        log("!!! EMERGENCY ACTIVATED !!! Buffer too cold: " + bufferTemp + "°C");
+        log("!!! EMERGENCY !!! Buffer too cold: " + bufferTemp + "°C");
         
         // Reset PID
         integral = 0;
         lastError = 0;
+        pidInitialized = false;
         
-        // Immediately move mixer to 0% (closed)
+        // Close mixer immediately
         moveMixerTo(0, true);
-    }
-    // Deactivate emergency when buffer warm enough again
-    else if (emergencyActive && bufferTemp >= BUFFER_EMERGENCY_OK) {
-        emergencyActive = false;
-        let emergencyDuration = Math.round((now() - emergencyStartTime) / 1000);
         
-        log("Emergency ended after " + emergencyDuration + "s. Buffer: " + bufferTemp + "°C");
+    } else if (emergencyActive && bufferTemp >= BUFFER_EMERGENCY_OK) {
+        // DEACTIVATE emergency
+        let duration = Math.round((now() - emergencyStartTime) / 1000);
+        emergencyActive = false;
+        
+        log("Emergency ended after " + duration + "s. Buffer: " + bufferTemp + "°C");
+        
+        // Reset PID for clean restart
+        integral = 0;
+        lastError = 0;
+        pidInitialized = false;
+        lastPidTime = now();
         
         setState(STATE.AUTO);
         
-        // Reinitialize PID
-        pidInitialized = false;
-        lastPidTime = now();
-    }
-    // Status update during emergency
-    else if (emergencyActive) {
-        log("Emergency active - Buffer: " + bufferTemp + "°C, Position: " + currentPosition + "%");
+    } else if (emergencyActive) {
+        log("Emergency: Buffer=" + bufferTemp + "°C, Pos=" + currentPosition + "%");
         
         // Ensure mixer stays closed
-        if (currentPosition > 5 && !isMoving) {
+        if (currentPosition > 0 && !isMoving) {
             moveMixerTo(0, true);
         }
     }
@@ -363,7 +391,7 @@ function checkBufferEmergency() {
  */
 function initializePID() {
     if (flowTemp === null) {
-        log("PID Init: Waiting for valid temperature");
+        log("PID Init: Waiting for temperature");
         return false;
     }
     
@@ -372,7 +400,7 @@ function initializePID() {
     lastPidTime = now();
     pidInitialized = true;
     
-    log("PID initialized - Setpoint: " + setpoint + "°C, Actual: " + flowTemp + "°C");
+    log("PID initialized - Setpoint=" + setpoint + "°C, Actual=" + flowTemp + "°C");
     return true;
 }
 
@@ -380,10 +408,8 @@ function initializePID() {
  * Executes a PID control step
  */
 function executePIDControl() {
-    // No PID control during emergency
-    if (emergencyActive) {
-        return;
-    }
+    // No PID during emergency
+    if (emergencyActive) return;
     
     // Read flow temperature
     if (!readFlowTemp()) {
@@ -393,63 +419,73 @@ function executePIDControl() {
     
     // Initialize PID if necessary
     if (!pidInitialized) {
-        if (!initializePID()) {
-            return;
-        }
+        if (!initializePID()) return;
+        // Skip first calculation after init to get a valid dt next time
+        return;
     }
     
-    // Update setpoint
+    // Update setpoint and parameters
     readSetpoint();
-    
-    // Update PID parameters
     readPIDParameters();
     
     // Calculate error
     let error = setpoint - flowTemp;
     
-    // If already at target, do nothing
+    // Dead band: if close enough, just reset integral and skip
     if (Math.abs(error) < 0.3) {
-        log("PID: Target reached (deviation: " + error.toFixed(2) + "°C)");
-        integral = 0; // Reset integral
+        log("PID: On target (deviation=" + error.toFixed(2) + "°C)");
+        integral = 0;
+        lastError = error;
         return;
     }
     
     // Calculate time difference
     let currentTime = now();
-    let dt = (currentTime - lastPidTime) / 1000; // in seconds
+    let dt = (currentTime - lastPidTime) / 1000;
     lastPidTime = currentTime;
     
     // Safety check for dt
-    if (dt <= 0 || dt > 300) {
-        log("PID: Invalid time difference dt=" + dt + "s, skipping calculation");
+    if (dt <= 0 || dt > 600) {
+        log("PID: Invalid dt=" + dt + "s, resetting");
         lastError = error;
         return;
     }
     
-    // Integral (with anti-windup)
-    integral += error * dt;
-    integral = clamp(integral, -50, 50);
+    // P term
+    let pTerm = Kp * error;
     
-    // Derivative
+    // I term with anti-windup
+    // Only accumulate integral when output is not saturated
+    let tentativeIntegral = integral + error * dt;
+    tentativeIntegral = clamp(tentativeIntegral, INTEGRAL_MIN, INTEGRAL_MAX);
+    
+    // Back-calculation anti-windup: don't wind up if we're at position limits
+    if ((currentPosition >= MAX_POSITION && error > 0) ||
+        (currentPosition <= MIN_POSITION && error < 0)) {
+        // Don't accumulate integral when saturated in the wrong direction
+        log("PID: Anti-windup active (position at limit)");
+    } else {
+        integral = tentativeIntegral;
+    }
+    let iTerm = Ki * integral;
+    
+    // D term
     let derivative = (error - lastError) / dt;
+    let dTerm = Kd * derivative;
     lastError = error;
     
     // Calculate PID output
-    let pTerm = Kp * error;
-    let iTerm = Ki * integral;
-    let dTerm = Kd * derivative;
     let output = pTerm + iTerm + dTerm;
     
-    // Limit output (max. 15% change per step)
-    output = clamp(output, -15, 15);
+    // Limit output per step
+    output = clamp(output, -OUTPUT_STEP_LIMIT, OUTPUT_STEP_LIMIT);
     
-    // Calculate new position
-    let newPosition = currentPosition + output;
-    newPosition = clamp(newPosition, MIN_POSITION, MAX_POSITION);
+    // Calculate new position (even integer)
+    let newPosition = toValidPosition(currentPosition + output);
     
-    log("PID: Actual=" + flowTemp.toFixed(1) + "°C, Setpoint=" + setpoint + "°C, " +
-        "Error=" + error.toFixed(2) + "°C, Output=" + output.toFixed(2) + "%, " +
-        "New=" + newPosition.toFixed(1) + "%, " +
+    log("PID: T=" + flowTemp.toFixed(1) + "°C, SP=" + setpoint + "°C, " +
+        "E=" + error.toFixed(2) + ", Out=" + output.toFixed(2) + "%, " +
+        "Pos=" + currentPosition + "->" + newPosition + "%, " +
         "P=" + pTerm.toFixed(2) + " I=" + iTerm.toFixed(2) + " D=" + dTerm.toFixed(2));
     
     // Move mixer
@@ -458,59 +494,58 @@ function executePIDControl() {
 
 /*********** INITIALIZATION ***********/
 
-/**
- * Initializes the script at startup
- */
 function initialize() {
     log("========================================");
     log("Shelly 2PM PID Mixer Control v2.0");
     log("========================================");
     
     // Read initial values
-    log("Reading initial values...");
     readFlowTemp();
     readBufferTemp();
     readSetpoint();
     readPIDParameters();
     
-    // Output status
+    // Ensure starting position is even
+    currentPosition = toValidPosition(currentPosition);
+    targetPosition = currentPosition;
+    
     log("Flow: " + (flowTemp !== null ? flowTemp + "°C" : "N/A"));
     log("Buffer: " + (bufferTemp !== null ? bufferTemp + "°C" : "N/A"));
     log("Setpoint: " + setpoint + "°C");
-    log("Mixer position: " + currentPosition + "%");
-    log("PID: Kp=" + Kp + ", Ki=" + Ki + ", Kd=" + Kd);
+    log("Position: " + currentPosition + "%");
     
-    // Set initial state
     setState(STATE.AUTO);
     
-    // Check immediately if emergency exists
+    // Immediate emergency check
     checkBufferEmergency();
     
-    log("Initialization complete");
+    // Set lastPidTime so first PID cycle has valid dt
+    lastPidTime = now();
+    
+    log("Init complete");
     log("========================================");
 }
 
 /*********** TIMER SETUP ***********/
 
-// Initialize at startup
 initialize();
 
-// Timer 1: Temperature query (10 seconds)
+// Timer 1: Temperature query (10s)
 Timer.set(TEMP_READ_INTERVAL, true, function() {
     readFlowTemp();
 });
 
-// Timer 2: Buffer monitoring (30 seconds)
+// Timer 2: Buffer monitoring (30s)
 Timer.set(BUFFER_CHECK_INTERVAL, true, function() {
     checkBufferEmergency();
 });
 
-// Timer 3: PID calculation (2.5 minutes)
+// Timer 3: PID calculation (2.5 min)
 Timer.set(PID_CALC_INTERVAL, true, function() {
     executePIDControl();
 });
 
-log("All timers started");
-log("- Temperature query: every " + (TEMP_READ_INTERVAL / 1000) + "s");
-log("- Buffer check: every " + (BUFFER_CHECK_INTERVAL / 1000) + "s");
-log("- PID calculation: every " + (PID_CALC_INTERVAL / 1000) + "s");
+log("Timers: Temp=" + (TEMP_READ_INTERVAL / 1000) + "s, " +
+    "Buffer=" + (BUFFER_CHECK_INTERVAL / 1000) + "s, " +
+    "PID=" + (PID_CALC_INTERVAL / 1000) + "s");
+
