@@ -34,9 +34,10 @@ An intelligent PID controller for heating mixers based on the Shelly 2PM with in
 - **🚨 Emergency Protection**: Automatic mixer closing when buffer storage temperature is too low
 - **📊 State Monitoring**: Real-time status display via virtual text component
 - **⏱️ Smart Timers**: Optimized query intervals to protect hardware
-- **🔒 Anti-Windup**: Prevents integral overflow during long control deviations
+- **🔒 Anti-Windup**: Back-calculation anti-windup prevents integral overflow at position limits
 - **📝 Detailed Logging**: Comprehensive debug output for troubleshooting
 - **🛡️ Fault Tolerance**: Robust error handling for sensor failures
+- **🔢 Integer Positions**: All mixer positions are even integers (0, 2, 4, ... 100) for Shelly compatibility
 
 ## 🔧 System Requirements
 
@@ -76,7 +77,7 @@ Ensure temperature sensors are correctly connected and assigned:
 1. Open the Shelly web interface
 2. Navigate to **Scripts** → **Library**
 3. Create a new script
-4. Copy the contents of `shelly_2pm_pid_mixer_english.js`
+4. Copy the contents of `shelly_2pm_pid_mixer_v2.js`
 5. Save and **activate script**
 
 ### Step 4: Adjust Configuration
@@ -117,13 +118,17 @@ Default timers are optimized for most applications:
 let TEMP_READ_INTERVAL = 10000;      // 10 seconds - Temperature query
 let PID_CALC_INTERVAL = 150000;      // 2.5 minutes - PID calculation
 let BUFFER_CHECK_INTERVAL = 30000;   // 30 seconds - Buffer check
-let MIN_MOVE_PAUSE = 30000;          // 30 seconds - Pause between movements
+let MIN_MOVE_PAUSE = 60000;          // 60 seconds - Pause between movements
 ```
 
 **Recommendations**:
 - **Sluggish system** (large water volume): Increase intervals
 - **Fast system** (small piping): Decrease intervals
 - **Critical buffer**: Reduce `BUFFER_CHECK_INTERVAL`
+
+### Position Handling
+
+All mixer positions are handled as **even integers** (0, 2, 4, ... 100). This ensures compatibility with the Shelly 2PM's integer-based Cover component. The minimum movement threshold (`MIN_MOVE_PERCENT`) is set to 2% accordingly.
 
 ## 🔄 How It Works
 
@@ -140,7 +145,9 @@ Setpoint - Actual Temperature = Error
          ↓
    Output (±15% max)
          ↓
-   Mixer Position
+   Round to even integer
+         ↓
+   Mixer Position (0, 2, 4, ... 100)
 ```
 
 ### Control Cycle (every 2.5 minutes)
@@ -148,17 +155,17 @@ Setpoint - Actual Temperature = Error
 1. **Read temperature**: Get current flow temperature
 2. **Calculate error**: `error = setpoint - flowTemp`
 3. **Calculate PID**: Combine P, I and D terms
-4. **Calculate position**: Determine new mixer position
+4. **Calculate position**: Determine new mixer position (rounded to even integer)
 5. **Move mixer**: Move to position if necessary
 
 ### State Machine
 
 ```
-AUTO ←→ MOVING → AUTO
+AUTO ↔→ MOVING → AUTO
   ↓         ↓
 EMERGENCY   PAUSE
   ↓         ↓
-AUTO ←→  ERROR
+AUTO ↔→  ERROR
 ```
 
 | State | Description |
@@ -178,7 +185,7 @@ Emergency mode is activated when:
 
 **Automatic actions**:
 1. ⚠️ Status changes to "EMERGENCY"
-2. 🔒 PID control is disabled
+2. 🔒 PID control is disabled and reset
 3. ⬇️ Mixer immediately moves to **0%** (closed)
 4. ⏸️ Normal control pauses
 
@@ -189,7 +196,7 @@ Emergency mode ends when:
 
 **Automatic actions**:
 1. ✅ Status changes back to "AUTO"
-2. 🔄 PID control is reinitialized
+2. 🔄 PID control is fully reinitialized
 3. ▶️ Normal control resumes
 
 ### Hysteresis Effect
@@ -256,7 +263,7 @@ Temperature
 
 **Tip**: Always change only **one** parameter at a time!
 
-## 🐛 Troubleshooting
+## 🛠 Troubleshooting
 
 ### Problem: Mixer doesn't move
 
@@ -269,7 +276,7 @@ Temperature
 **Solution**:
 ```javascript
 // Should appear in log:
-"Moving mixer: 50% -> 55% (6s)"
+"Move: 50% -> 56% (diff=6%, time=7s)"
 ```
 
 ### Problem: No temperature values
@@ -328,27 +335,27 @@ let BUFFER_EMERGENCY_OK = 40;   // Lower
 
 ```javascript
 // Normal PID output:
-"PID: Actual=42.5°C, Setpoint=45°C, Error=2.50°C, Output=5.23%, New=55.2%, P=15.00 I=-8.50 D=-1.27"
+"PID: T=42.5°C, SP=45°C, E=2.50, Out=5.23%, Pos=50->56%, P=15.00 I=-8.50 D=-1.27"
 ```
 
 **Meaning**:
-- `Actual`: Measured temperature
-- `Setpoint`: Target temperature
-- `Error`: Difference (positive = too cold)
-- `Output`: Change in mixer position
+- `T`: Measured temperature
+- `SP`: Target temperature
+- `E`: Error (positive = too cold)
+- `Out`: Change in mixer position
+- `Pos`: Current → new position (even integers)
 - `P/I/D`: Individual control terms
 
 ### Critical Log Messages
 
 | Message | Meaning | Action |
 |---------|---------|--------|
-| `!!! EMERGENCY ACTIVATED !!!` | Emergency active | Check buffer heating |
-| `Error reading sensor` | Sensor error | Check wiring |
-| `Invalid time difference` | Timer problem | Restart script |
-| `Position already reached` | No action needed | Normal, no action |
-
+| `!!! EMERGENCY !!!` | Emergency active | Check buffer heating |
+| `Flow sensor: Invalid or missing value` | Sensor error | Check wiring |
+| `PID: Invalid dt` | Timer problem | Restart script |
+| `Position OK` | No action needed | Normal, no action |
+| `PID: Anti-windup active` | Position at limit | Normal, integral clamped |
 
 ## 📄 License
 
 This project is licensed under the MIT License - see [LICENSE](LICENSE) for details.
-
