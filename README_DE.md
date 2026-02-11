@@ -34,9 +34,10 @@ Eine intelligente PID-Regelung für Heizungsmischer basierend auf dem Shelly 2PM
 - **🚨 Notfall-Schutz**: Automatisches Schließen des Mischers bei zu niedriger Pufferspeicher-Temperatur
 - **📊 Zustandsüberwachung**: Echtzeit-Status-Anzeige über virtuelle Textkomponente
 - **⏱️ Intelligente Timer**: Optimierte Abfrageintervalle zur Schonung der Hardware
-- **🔒 Anti-Windup**: Verhindert Integral-Überlauf bei langen Regelabweichungen
+- **🔒 Anti-Windup**: Back-Calculation Anti-Windup verhindert Integral-Überlauf bei Positionslimits
 - **📝 Detailliertes Logging**: Umfangreiche Debug-Ausgaben für Fehlersuche
 - **🛡️ Fehlertoleranz**: Robuste Fehlerbehandlung bei Sensor-Ausfällen
+- **🔢 Integer-Positionen**: Alle Mischer-Positionen sind gerade Ganzzahlen (0, 2, 4, ... 100) für Shelly-Kompatibilität
 
 ## 🔧 Systemanforderungen
 
@@ -76,7 +77,7 @@ Stelle sicher, dass die Temperatursensoren korrekt angeschlossen und zugeordnet 
 1. Öffne die Shelly Web-Oberfläche
 2. Navigiere zu **Scripts** → **Library**
 3. Erstelle ein neues Script
-4. Kopiere den Inhalt von `shelly_2pm_pid_mischer_deutsch.js`
+4. Kopiere den Inhalt von `shelly_2pm_pid_mixer_v2.js`
 5. Speichern und **Script aktivieren**
 
 ### Schritt 4: Konfiguration anpassen
@@ -117,13 +118,17 @@ Die Standard-Timer sind für die meisten Anwendungen optimiert:
 let TEMP_READ_INTERVAL = 10000;      // 10 Sekunden - Temperatur-Abfrage
 let PID_CALC_INTERVAL = 150000;      // 2,5 Minuten - PID-Berechnung
 let BUFFER_CHECK_INTERVAL = 30000;   // 30 Sekunden - Puffer-Check
-let MIN_MOVE_PAUSE = 30000;          // 30 Sekunden - Pause zwischen Fahrten
+let MIN_MOVE_PAUSE = 60000;          // 60 Sekunden - Pause zwischen Fahrten
 ```
 
 **Empfehlungen**:
 - **Träges System** (große Wassermenge): Intervalle verlängern
 - **Schnelles System** (kleine Rohrleitungen): Intervalle verkürzen
 - **Kritischer Puffer**: `BUFFER_CHECK_INTERVAL` reduzieren
+
+### Positions-Handling
+
+Alle Mischer-Positionen werden als **gerade Ganzzahlen** (0, 2, 4, ... 100) behandelt. Dies stellt die Kompatibilität mit der Integer-basierten Cover-Komponente des Shelly 2PM sicher. Die Mindestbewegung (`MIN_MOVE_PERCENT`) ist entsprechend auf 2% gesetzt.
 
 ## 🔄 Funktionsweise
 
@@ -140,7 +145,9 @@ Sollwert - Ist-Temperatur = Fehler (Error)
          ↓
    Output (±15% max)
          ↓
-   Mischer-Position
+   Rundung auf gerade Ganzzahl
+         ↓
+   Mischer-Position (0, 2, 4, ... 100)
 ```
 
 ### Regelzyklus (alle 2,5 Minuten)
@@ -148,17 +155,17 @@ Sollwert - Ist-Temperatur = Fehler (Error)
 1. **Temperatur lesen**: Aktuelle Vorlauftemperatur abrufen
 2. **Fehler berechnen**: `error = setpoint - flowTemp`
 3. **PID berechnen**: P, I und D Terme kombinieren
-4. **Position berechnen**: Neue Mischer-Position ermitteln
+4. **Position berechnen**: Neue Mischer-Position ermitteln (Rundung auf gerade Ganzzahl)
 5. **Mischer bewegen**: Falls nötig, Position anfahren
 
-### Zustandsautomaten
+### Zustandsautomat
 
 ```
-AUTO ←→ MOVING → AUTO
+AUTO ↔→ MOVING → AUTO
   ↓         ↓
 EMERGENCY   PAUSE
   ↓         ↓
-AUTO ←→  ERROR
+AUTO ↔→  ERROR
 ```
 
 | Zustand | Beschreibung |
@@ -178,7 +185,7 @@ Der Notfall-Modus wird aktiviert, wenn:
 
 **Automatische Aktionen**:
 1. ⚠️ Status wechselt zu "EMERGENCY"
-2. 🔒 PID-Regelung wird deaktiviert
+2. 🔒 PID-Regelung wird deaktiviert und zurückgesetzt
 3. ⬇️ Mischer fährt sofort auf **0%** (geschlossen)
 4. ⏸️ Normale Regelung pausiert
 
@@ -189,10 +196,10 @@ Der Notfall-Modus wird beendet, wenn:
 
 **Automatische Aktionen**:
 1. ✅ Status wechselt zurück zu "AUTO"
-2. 🔄 PID-Regelung wird neu initialisiert
+2. 🔄 PID-Regelung wird vollständig neu initialisiert
 3. ▶️ Normale Regelung läuft wieder an
 
-### Hysterse-Effekt
+### Hysterese-Effekt
 
 Die **5°C Hysterese** (40°C bis 45°C) verhindert ständiges Ein/Ausschalten bei Temperaturschwankungen.
 
@@ -256,7 +263,7 @@ Temperatur
 
 **Tipp**: Ändere immer nur **einen** Parameter auf einmal!
 
-## 🐛 Fehlerbehebung
+## 🛠 Fehlerbehebung
 
 ### Problem: Mischer bewegt sich nicht
 
@@ -269,7 +276,7 @@ Temperatur
 **Lösung**:
 ```javascript
 // Im Log sollte erscheinen:
-"Moving mixer: 50% -> 55% (6s)"
+"Move: 50% -> 56% (diff=6%, time=7s)"
 ```
 
 ### Problem: Keine Temperatur-Werte
@@ -328,24 +335,26 @@ let BUFFER_EMERGENCY_OK = 40;   // Niedriger
 
 ```javascript
 // Normale PID-Ausgabe:
-"PID: Actual=42.5°C, Setpoint=45°C, Error=2.50°C, Output=5.23%, New=55.2%, P=15.00 I=-8.50 D=-1.27"
+"PID: T=42.5°C, SP=45°C, E=2.50, Out=5.23%, Pos=50->56%, P=15.00 I=-8.50 D=-1.27"
 ```
 
 **Bedeutung**:
-- `Actual`: Gemessene Temperatur
-- `Setpoint`: Ziel-Temperatur
-- `Error`: Differenz (positiv = zu kalt)
-- `Output`: Änderung der Mischer-Position
+- `T`: Gemessene Temperatur
+- `SP`: Ziel-Temperatur
+- `E`: Fehler (positiv = zu kalt)
+- `Out`: Änderung der Mischer-Position
+- `Pos`: Aktuelle → neue Position (gerade Ganzzahlen)
 - `P/I/D`: Einzelne Terme der Regelung
 
 ### Kritische Log-Meldungen
 
 | Meldung | Bedeutung | Aktion |
 |---------|-----------|--------|
-| `!!! EMERGENCY ACTIVATED !!!` | Notfall aktiv | Prüfe Puffer-Heizung |
-| `Error reading sensor` | Sensor-Fehler | Prüfe Verkabelung |
-| `Invalid time difference` | Timer-Problem | Script neu starten |
-| `Position already reached` | Kein Bedarf | Normal, keine Aktion |
+| `!!! EMERGENCY !!!` | Notfall aktiv | Prüfe Puffer-Heizung |
+| `Flow sensor: Invalid or missing value` | Sensor-Fehler | Prüfe Verkabelung |
+| `PID: Invalid dt` | Timer-Problem | Script neu starten |
+| `Position OK` | Kein Bedarf | Normal, keine Aktion |
+| `PID: Anti-windup active` | Position am Limit | Normal, Integral begrenzt |
 
 ## 📄 Lizenz
 
