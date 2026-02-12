@@ -23,7 +23,6 @@ let BUFFER_CHECK_INTERVAL = 30000;   // Buffer check: 30 seconds
 let MIN_MOVE_PAUSE = 60000;          // Minimum pause between movements: 60 seconds
 
 // Mixer Configuration
-let MIXER_FULL_TIME = 120;           // Seconds for 0-100% travel
 let MIN_POSITION = 0;                // Minimum position (closed)
 let MAX_POSITION = 100;              // Maximum position (open)
 let MIN_MOVE_PERCENT = 2;            // Minimum change to trigger movement (integer)
@@ -58,9 +57,7 @@ let setpoint = 25;                   // Setpoint temperature
 // Mixer State
 let currentPosition = 50;            // Current position (0-100%, integer)
 let targetPosition = 50;             // Target position (integer)
-let isMoving = false;                // Movement flag
 let lastMoveTime = 0;                // Timestamp of last movement
-let moveTimer = null;                // Reference to active movement timer
 
 // PID Variables
 let integral = 0;
@@ -232,26 +229,9 @@ function readPIDParameters() {
 /*********** MIXER CONTROL ***********/
 
 /**
- * Stops the current mixer movement
- */
-function stopMixer() {
-    // Cancel pending movement timer
-    if (moveTimer !== null) {
-        Timer.clear(moveTimer);
-        moveTimer = null;
-    }
-    
-    Shelly.call("Cover.Stop", { id: COVER_ID }, function() {
-        isMoving = false;
-        log("Mixer stopped at: " + currentPosition + "%");
-    }, function(error_code, error_message) {
-        log("Error stopping mixer: " + error_message);
-        isMoving = false;
-    });
-}
-
-/**
- * Moves the mixer to a target position (even integer)
+ * Moves the mixer to a target position using Cover.GoToPosition.
+ * The %-value is passed directly - the Shelly handles movement itself.
+ *
  * @param {number} newTargetPosition - Desired position (will be rounded to even int)
  * @param {boolean} forceMove - Skip pause/movement checks
  * @returns {boolean} - Whether movement was started
@@ -261,17 +241,6 @@ function moveMixerTo(newTargetPosition, forceMove) {
     
     // Convert to valid even integer position
     newTargetPosition = toValidPosition(newTargetPosition);
-    
-    // Check if movement is already in progress
-    if (isMoving && !forceMove) {
-        log("Mixer busy - ignoring");
-        return false;
-    }
-    
-    // Force: stop current movement first
-    if (isMoving && forceMove) {
-        stopMixer();
-    }
     
     // Check minimum pause
     let timeSinceLastMove = now() - lastMoveTime;
@@ -293,42 +262,30 @@ function moveMixerTo(newTargetPosition, forceMove) {
     
     // Start movement
     targetPosition = newTargetPosition;
-    isMoving = true;
     setState(STATE.MOVING);
     
-    // Calculate travel time
-    let movePercentage = Math.abs(positionDiff);
-    let moveTimeMs = Math.round((movePercentage / 100) * MIXER_FULL_TIME * 1000);
-    
-    // Minimum travel time safety
-    if (moveTimeMs < 500) moveTimeMs = 500;
-    
     log("Move: " + currentPosition + "% -> " + targetPosition +
-        "% (diff=" + positionDiff + "%, time=" + Math.round(moveTimeMs / 1000) + "s)");
+        "% (diff=" + positionDiff + "%)");
     
-    // Determine direction
-    let command = positionDiff > 0 ? "Cover.Open" : "Cover.Close";
-    
-    Shelly.call(command, { id: COVER_ID }, function() {
-        // Movement started - set stop timer
-        moveTimer = Timer.set(moveTimeMs, false, function() {
-            moveTimer = null;
-            stopMixer();
-            currentPosition = targetPosition;
-            lastMoveTime = now();
-            
-            if (emergencyActive) {
-                setState(STATE.EMERGENCY);
-            } else {
-                setState(STATE.AUTO);
-            }
-            
-            log("Position reached: " + currentPosition + "%");
-        });
+    // Send target position directly to cover
+    Shelly.call("Cover.GoToPosition", {
+        id: COVER_ID,
+        pos: targetPosition
+    }, function() {
+        // Command accepted - update position
+        currentPosition = targetPosition;
+        lastMoveTime = now();
+        
+        if (emergencyActive) {
+            setState(STATE.EMERGENCY);
+        } else {
+            setState(STATE.AUTO);
+        }
+        
+        log("Position reached: " + currentPosition + "%");
         
     }, function(error_code, error_message) {
-        log("Error starting movement: " + error_message);
-        isMoving = false;
+        log("Error moving mixer: " + error_message);
         setState(STATE.ERROR);
     });
     
@@ -378,7 +335,7 @@ function checkBufferEmergency() {
         log("Emergency: Buffer=" + bufferTemp + "°C, Pos=" + currentPosition + "%");
         
         // Ensure mixer stays closed
-        if (currentPosition > 0 && !isMoving) {
+        if (currentPosition > 0) {
             moveMixerTo(0, true);
         }
     }
@@ -496,7 +453,8 @@ function executePIDControl() {
 
 function initialize() {
     log("========================================");
-    log("Shelly 2PM PID Mixer Control v2.0");
+    log("Shelly 2PM PID Mixer Control v2.1");
+    log("(GoToPosition - no manual timing)");
     log("========================================");
     
     // Read initial values
@@ -548,4 +506,3 @@ Timer.set(PID_CALC_INTERVAL, true, function() {
 log("Timers: Temp=" + (TEMP_READ_INTERVAL / 1000) + "s, " +
     "Buffer=" + (BUFFER_CHECK_INTERVAL / 1000) + "s, " +
     "PID=" + (PID_CALC_INTERVAL / 1000) + "s");
-
