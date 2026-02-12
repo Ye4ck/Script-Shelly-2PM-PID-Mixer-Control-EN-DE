@@ -7,6 +7,8 @@ An intelligent PID controller for heating mixers based on the Shelly 2PM with in
 
 [🇩🇪 Deutsche Version](README_DE.md)
 
+## v2.1 fixed position Drift (GoToPosition - no manual timing)
+
 ## 🔐 Safety Notes
 
 ⚠️ **IMPORTANT**:
