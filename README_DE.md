@@ -7,31 +7,43 @@ Eine intelligente PID-Regelung für Heizungsmischer basierend auf dem Shelly 2PM
 
 [🇬🇧 English Version](README.md)
 
+## 📦 Verfügbare Versionen
+
+| Version | Datei | Beschreibung |
+|---------|-------|--------------|
+| **Vollversion** | `shelly_pid_mixer_with_buffer.js` | PID-Regelung **mit** Pufferüberwachung & Notfall-Modus |
+| **Ohne Puffer** | `shelly_pid_mixer_no_buffer.js` | PID-Regelung **ohne** Pufferüberwachung & Notfall-Modus |
+
+> **💡 Welche Version brauche ich?**
+> - Verwende die **Vollversion**, wenn du einen Pufferspeicher mit Temperatursensor hast und eine automatische Notabschaltung bei zu kaltem Puffer möchtest.
+> - Verwende die **Version ohne Puffer**, wenn du keinen Pufferspeicher-Sensor hast oder keinen Notfall-Schutz benötigst (z.B. direkte Kesselanbindung, Fernwärme, etc.).
+
 ## 🔐 Sicherheitshinweise
 
 ⚠️ **WICHTIG**:
 - Dieses Script steuert deine Heizungsanlage
 - Teste gründlich in einer sicheren Umgebung
 - Überwache das System in den ersten Tagen intensiv
-- Stelle sicher, dass Notfall-Abschaltungen funktionieren
+- Stelle sicher, dass Notfall-Abschaltungen funktionieren (nur Vollversion)
 - Bei Unsicherheit: Konsultiere einen Fachmann
 
 ## 📋 Inhaltsverzeichnis
 
+- [Verfügbare Versionen](#-verfügbare-versionen)
 - [Features](#-features)
 - [Systemanforderungen](#-systemanforderungen)
 - [Installation](#-installation)
 - [Konfiguration](#️-konfiguration)
 - [Funktionsweise](#-funktionsweise)
-- [Notfall-Modus](#-notfall-modus)
+- [Notfall-Modus](#-notfall-modus) *(nur Vollversion)*
 - [PID-Parameter Tuning](#-pid-parameter-tuning)
 - [Fehlerbehebung](#-fehlerbehebung)
 - [Lizenz](#-lizenz)
 
 ## ✨ Features
 
+### Beide Versionen
 - **🎯 PID-Regelung**: Präzise Temperaturregelung mit anpassbaren Parametern (Kp, Ki, Kd)
-- **🚨 Notfall-Schutz**: Automatisches Schließen des Mischers bei zu niedriger Pufferspeicher-Temperatur
 - **📊 Zustandsüberwachung**: Echtzeit-Status-Anzeige über virtuelle Textkomponente
 - **⏱️ Intelligente Timer**: Optimierte Abfrageintervalle zur Schonung der Hardware
 - **🔒 Anti-Windup**: Back-Calculation Anti-Windup verhindert Integral-Überlauf bei Positionslimits
@@ -39,13 +51,16 @@ Eine intelligente PID-Regelung für Heizungsmischer basierend auf dem Shelly 2PM
 - **🛡️ Fehlertoleranz**: Robuste Fehlerbehandlung bei Sensor-Ausfällen
 - **🔢 Integer-Positionen**: Alle Mischer-Positionen sind gerade Ganzzahlen (0, 2, 4, ... 100) für Shelly-Kompatibilität
 
+### Nur Vollversion
+- **🚨 Notfall-Schutz**: Automatisches Schließen des Mischers bei zu niedriger Pufferspeicher-Temperatur
+
 ## 🔧 Systemanforderungen
 
 ### Hardware
 - **Shelly 2PM** (Gen2 Pro oder Gen3 und darüber)
-- **2x DS18B20 Temperatursensoren** (oder kompatibel)
-  - Sensor 100: Pufferspeicher-Fühler
+- **Temperatursensoren** (DS18B20 oder kompatibel)
   - Sensor 101: Vorlauf-Temperaturfühler
+  - Sensor 100: Pufferspeicher-Fühler *(nur Vollversion)*
 - **Mischer-Motor** (0-100% in 120 Sekunden)
 
 ### Software
@@ -69,21 +84,24 @@ Erstelle folgende virtuelle Komponenten in deinem Shelly 2PM:
 ### Schritt 2: Temperatursensoren zuweisen
 
 Stelle sicher, dass die Temperatursensoren korrekt angeschlossen und zugeordnet sind:
-- **Sensor ID 100**: Pufferspeicher
 - **Sensor ID 101**: Vorlauftemperatur
+- **Sensor ID 100**: Pufferspeicher *(nur Vollversion)*
 
 ### Schritt 3: Script hochladen
 
 1. Öffne die Shelly Web-Oberfläche
 2. Navigiere zu **Scripts** → **Library**
 3. Erstelle ein neues Script
-4. Kopiere den Inhalt von `shelly_2pm_pid_mixer_v2.js`
+4. Kopiere den Inhalt der gewünschten Version:
+   - `shelly_pid_mixer_with_buffer.js` (Vollversion) **oder**
+   - `shelly_pid_mixer_no_buffer.js` (ohne Puffer)
 5. Speichern und **Script aktivieren**
 
 ### Schritt 4: Konfiguration anpassen
 
 Passe die Konfigurationswerte am Anfang des Scripts an deine Anlage an:
 
+**Vollversion:**
 ```javascript
 /*********** KONFIGURATION ***********/
 let COVER_ID = 0;                    // Deine Shelly Cover ID
@@ -96,6 +114,16 @@ let MIXER_FULL_TIME = 120;
 // Notfall-Schwellwerte
 let BUFFER_EMERGENCY_MIN = 40;       // Unter 40°C -> Notfall
 let BUFFER_EMERGENCY_OK = 45;        // Über 45°C -> Normal
+```
+
+**Version ohne Puffer:**
+```javascript
+/*********** KONFIGURATION ***********/
+let COVER_ID = 0;                    // Deine Shelly Cover ID
+let TEMP_SENSOR_ID = 101;            // Vorlauf-Sensor
+
+// Mischer-Laufzeit anpassen (Sekunden für 0-100%)
+let MIXER_FULL_TIME = 120;
 ```
 
 ## ⚙️ Konfiguration
@@ -114,17 +142,25 @@ Bestimme die Laufzeit deines Mischers von 0% auf 100%:
 
 Die Standard-Timer sind für die meisten Anwendungen optimiert:
 
+**Vollversion:**
 ```javascript
 let TEMP_READ_INTERVAL = 10000;      // 10 Sekunden - Temperatur-Abfrage
 let PID_CALC_INTERVAL = 150000;      // 2,5 Minuten - PID-Berechnung
 let BUFFER_CHECK_INTERVAL = 30000;   // 30 Sekunden - Puffer-Check
-let MIN_MOVE_PAUSE = 60000;          // 60 Sekunden - Pause zwischen Fahrten
+let MIN_MOVE_PAUSE = 30000;          // 30 Sekunden - Pause zwischen Fahrten
+```
+
+**Version ohne Puffer:**
+```javascript
+let TEMP_READ_INTERVAL = 10000;      // 10 Sekunden - Temperatur-Abfrage
+let PID_CALC_INTERVAL = 150000;      // 2,5 Minuten - PID-Berechnung
+let MIN_MOVE_PAUSE = 30000;          // 30 Sekunden - Pause zwischen Fahrten
 ```
 
 **Empfehlungen**:
 - **Träges System** (große Wassermenge): Intervalle verlängern
 - **Schnelles System** (kleine Rohrleitungen): Intervalle verkürzen
-- **Kritischer Puffer**: `BUFFER_CHECK_INTERVAL` reduzieren
+- **Kritischer Puffer**: `BUFFER_CHECK_INTERVAL` reduzieren *(nur Vollversion)*
 
 ### Positions-Handling
 
@@ -160,6 +196,7 @@ Sollwert - Ist-Temperatur = Fehler (Error)
 
 ### Zustandsautomat
 
+**Vollversion:**
 ```
 AUTO ↔→ MOVING → AUTO
   ↓         ↓
@@ -168,15 +205,27 @@ EMERGENCY   PAUSE
 AUTO ↔→  ERROR
 ```
 
-| Zustand | Beschreibung |
-|---------|--------------|
-| **AUTO** | Normaler PID-Betrieb |
-| **MOVING** | Mischer fährt gerade |
-| **PAUSE** | Wartezeit zwischen Bewegungen |
-| **EMERGENCY** | Notfall-Modus aktiv |
-| **ERROR** | Fehler aufgetreten |
+**Version ohne Puffer:**
+```
+AUTO ↔→ MOVING → AUTO
+            ↓
+          PAUSE
+            ↓
+AUTO ↔→  ERROR
+```
+
+| Zustand | Beschreibung | Version |
+|---------|--------------|---------|
+| **AUTO** | Normaler PID-Betrieb | Beide |
+| **MOVING** | Mischer fährt gerade | Beide |
+| **PAUSE** | Wartezeit zwischen Bewegungen | Beide |
+| **EMERGENCY** | Notfall-Modus aktiv | Nur Vollversion |
+| **ERROR** | Fehler aufgetreten | Beide |
 
 ## 🚨 Notfall-Modus
+
+> **ℹ️ Dieser Abschnitt gilt nur für die Vollversion** (`shelly_pid_mixer_with_buffer.js`).
+> Die Version ohne Puffer enthält keinen Notfall-Modus.
 
 ### Aktivierung
 
@@ -292,7 +341,7 @@ Temperatur
 // Temperatur-Komponenten → ID notieren
 ```
 
-### Problem: Ständiger Notfall-Modus
+### Problem: Ständiger Notfall-Modus *(nur Vollversion)*
 
 **Mögliche Ursachen**:
 - ✅ Puffer tatsächlich zu kalt
@@ -348,13 +397,13 @@ let BUFFER_EMERGENCY_OK = 40;   // Niedriger
 
 ### Kritische Log-Meldungen
 
-| Meldung | Bedeutung | Aktion |
-|---------|-----------|--------|
-| `!!! EMERGENCY !!!` | Notfall aktiv | Prüfe Puffer-Heizung |
-| `Flow sensor: Invalid or missing value` | Sensor-Fehler | Prüfe Verkabelung |
-| `PID: Invalid dt` | Timer-Problem | Script neu starten |
-| `Position OK` | Kein Bedarf | Normal, keine Aktion |
-| `PID: Anti-windup active` | Position am Limit | Normal, Integral begrenzt |
+| Meldung | Bedeutung | Aktion | Version |
+|---------|-----------|--------|---------|
+| `!!! EMERGENCY !!!` | Notfall aktiv | Prüfe Puffer-Heizung | Nur Vollversion |
+| `Flow sensor: Invalid or missing value` | Sensor-Fehler | Prüfe Verkabelung | Beide |
+| `PID: Invalid dt` | Timer-Problem | Script neu starten | Beide |
+| `Position OK` | Kein Bedarf | Normal, keine Aktion | Beide |
+| `PID: Anti-windup active` | Position am Limit | Normal, Integral begrenzt | Beide |
 
 ## 📄 Lizenz
 
