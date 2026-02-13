@@ -9,31 +9,43 @@ An intelligent PID controller for heating mixers based on the Shelly 2PM with in
 
 ## v2.1 fixed position Drift (GoToPosition - no manual timing)
 
+## 📦 Available Versions
+
+| Version | File | Description |
+|---------|------|-------------|
+| **Full version** | `shelly_pid_mixer_with_buffer.js` | PID control **with** buffer monitoring & emergency mode |
+| **Without buffer** | `shelly_pid_mixer_no_buffer.js` | PID control **without** buffer monitoring & emergency mode |
+
+> **💡 Which version do I need?**
+> - Use the **full version** if you have a buffer storage with a temperature sensor and want automatic emergency shutdown when the buffer is too cold.
+> - Use the **version without buffer** if you don't have a buffer storage sensor or don't need emergency protection (e.g. direct boiler connection, district heating, etc.).
+
 ## 🔐 Safety Notes
 
 ⚠️ **IMPORTANT**:
 - This script controls your heating system
 - Test thoroughly in a safe environment
 - Monitor the system intensively in the first few days
-- Ensure emergency shutdowns work
+- Ensure emergency shutdowns work (full version only)
 - When in doubt: Consult a professional
 
 ## 📋 Table of Contents
 
+- [Available Versions](#-available-versions)
 - [Features](#-features)
 - [System Requirements](#-system-requirements)
 - [Installation](#-installation)
 - [Configuration](#️-configuration)
 - [How It Works](#-how-it-works)
-- [Emergency Mode](#-emergency-mode)
+- [Emergency Mode](#-emergency-mode) *(full version only)*
 - [PID Parameter Tuning](#-pid-parameter-tuning)
 - [Troubleshooting](#-troubleshooting)
 - [License](#-license)
 
 ## ✨ Features
 
+### Both Versions
 - **🎯 PID Control**: Precise temperature control with adjustable parameters (Kp, Ki, Kd)
-- **🚨 Emergency Protection**: Automatic mixer closing when buffer storage temperature is too low
 - **📊 State Monitoring**: Real-time status display via virtual text component
 - **⏱️ Smart Timers**: Optimized query intervals to protect hardware
 - **🔒 Anti-Windup**: Back-calculation anti-windup prevents integral overflow at position limits
@@ -41,13 +53,16 @@ An intelligent PID controller for heating mixers based on the Shelly 2PM with in
 - **🛡️ Fault Tolerance**: Robust error handling for sensor failures
 - **🔢 Integer Positions**: All mixer positions are even integers (0, 2, 4, ... 100) for Shelly compatibility
 
+### Full Version Only
+- **🚨 Emergency Protection**: Automatic mixer closing when buffer storage temperature is too low
+
 ## 🔧 System Requirements
 
 ### Hardware
 - **Shelly 2PM** (Gen2 Pro or Gen3 and above)
-- **2x DS18B20 Temperature Sensors** (or compatible)
-  - Sensor 100: Buffer storage sensor
+- **Temperature Sensors** (DS18B20 or compatible)
   - Sensor 101: Flow temperature sensor
+  - Sensor 100: Buffer storage sensor *(full version only)*
 - **Mixer Motor** (0-100% in 120 seconds)
 
 ### Software
@@ -71,21 +86,24 @@ Create the following virtual components in your Shelly 2PM:
 ### Step 2: Assign Temperature Sensors
 
 Ensure temperature sensors are correctly connected and assigned:
-- **Sensor ID 100**: Buffer storage
 - **Sensor ID 101**: Flow temperature
+- **Sensor ID 100**: Buffer storage *(full version only)*
 
 ### Step 3: Upload Script
 
 1. Open the Shelly web interface
 2. Navigate to **Scripts** → **Library**
 3. Create a new script
-4. Copy the contents of `shelly_2pm_pid_mixer_v2.js`
+4. Copy the contents of your chosen version:
+   - `shelly_pid_mixer_with_buffer.js` (full version) **or**
+   - `shelly_pid_mixer_no_buffer.js` (without buffer)
 5. Save and **activate script**
 
 ### Step 4: Adjust Configuration
 
 Adjust the configuration values at the beginning of the script to match your system:
 
+**Full version:**
 ```javascript
 /*********** CONFIGURATION ***********/
 let COVER_ID = 0;                    // Your Shelly Cover ID
@@ -98,6 +116,16 @@ let MIXER_FULL_TIME = 120;
 // Emergency thresholds
 let BUFFER_EMERGENCY_MIN = 40;       // Below 40°C -> Emergency
 let BUFFER_EMERGENCY_OK = 45;        // Above 45°C -> Normal
+```
+
+**Version without buffer:**
+```javascript
+/*********** CONFIGURATION ***********/
+let COVER_ID = 0;                    // Your Shelly Cover ID
+let TEMP_SENSOR_ID = 101;            // Flow sensor
+
+// Adjust mixer travel time (seconds for 0-100%)
+let MIXER_FULL_TIME = 120;
 ```
 
 ## ⚙️ Configuration
@@ -116,17 +144,25 @@ Determine your mixer's travel time from 0% to 100%:
 
 Default timers are optimized for most applications:
 
+**Full version:**
 ```javascript
 let TEMP_READ_INTERVAL = 10000;      // 10 seconds - Temperature query
 let PID_CALC_INTERVAL = 150000;      // 2.5 minutes - PID calculation
 let BUFFER_CHECK_INTERVAL = 30000;   // 30 seconds - Buffer check
-let MIN_MOVE_PAUSE = 60000;          // 60 seconds - Pause between movements
+let MIN_MOVE_PAUSE = 30000;          // 30 seconds - Pause between movements
+```
+
+**Version without buffer:**
+```javascript
+let TEMP_READ_INTERVAL = 10000;      // 10 seconds - Temperature query
+let PID_CALC_INTERVAL = 150000;      // 2.5 minutes - PID calculation
+let MIN_MOVE_PAUSE = 30000;          // 30 seconds - Pause between movements
 ```
 
 **Recommendations**:
 - **Sluggish system** (large water volume): Increase intervals
 - **Fast system** (small piping): Decrease intervals
-- **Critical buffer**: Reduce `BUFFER_CHECK_INTERVAL`
+- **Critical buffer**: Reduce `BUFFER_CHECK_INTERVAL` *(full version only)*
 
 ### Position Handling
 
@@ -162,6 +198,7 @@ Setpoint - Actual Temperature = Error
 
 ### State Machine
 
+**Full version:**
 ```
 AUTO ↔→ MOVING → AUTO
   ↓         ↓
@@ -170,15 +207,27 @@ EMERGENCY   PAUSE
 AUTO ↔→  ERROR
 ```
 
-| State | Description |
-|-------|-------------|
-| **AUTO** | Normal PID operation |
-| **MOVING** | Mixer is currently moving |
-| **PAUSE** | Waiting time between movements |
-| **EMERGENCY** | Emergency mode active |
-| **ERROR** | Error occurred |
+**Version without buffer:**
+```
+AUTO ↔→ MOVING → AUTO
+            ↓
+          PAUSE
+            ↓
+AUTO ↔→  ERROR
+```
+
+| State | Description | Version |
+|-------|-------------|---------|
+| **AUTO** | Normal PID operation | Both |
+| **MOVING** | Mixer is currently moving | Both |
+| **PAUSE** | Waiting time between movements | Both |
+| **EMERGENCY** | Emergency mode active | Full only |
+| **ERROR** | Error occurred | Both |
 
 ## 🚨 Emergency Mode
+
+> **ℹ️ This section applies only to the full version** (`shelly_pid_mixer_with_buffer.js`).
+> The version without buffer does not include emergency mode.
 
 ### Activation
 
@@ -294,7 +343,7 @@ Temperature
 // Temperature components → Note ID
 ```
 
-### Problem: Constant emergency mode
+### Problem: Constant emergency mode *(full version only)*
 
 **Possible causes**:
 - ✅ Buffer actually too cold
@@ -350,13 +399,13 @@ let BUFFER_EMERGENCY_OK = 40;   // Lower
 
 ### Critical Log Messages
 
-| Message | Meaning | Action |
-|---------|---------|--------|
-| `!!! EMERGENCY !!!` | Emergency active | Check buffer heating |
-| `Flow sensor: Invalid or missing value` | Sensor error | Check wiring |
-| `PID: Invalid dt` | Timer problem | Restart script |
-| `Position OK` | No action needed | Normal, no action |
-| `PID: Anti-windup active` | Position at limit | Normal, integral clamped |
+| Message | Meaning | Action | Version |
+|---------|---------|--------|---------|
+| `!!! EMERGENCY !!!` | Emergency active | Check buffer heating | Full only |
+| `Flow sensor: Invalid or missing value` | Sensor error | Check wiring | Both |
+| `PID: Invalid dt` | Timer problem | Restart script | Both |
+| `Position OK` | No action needed | Normal, no action | Both |
+| `PID: Anti-windup active` | Position at limit | Normal, integral clamped | Both |
 
 ## 📄 License
 
